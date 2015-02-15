@@ -1,100 +1,256 @@
-/*
- * Copyright (c) 2007, Swedish Institute of Computer Science.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- * 3. Neither the name of the Institute nor the names of its contributors
- *    may be used to endorse or promote products derived from this software
- *    without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE INSTITUTE AND CONTRIBUTORS ``AS IS'' AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED.  IN NO EVENT SHALL THE INSTITUTE OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
- * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
- * SUCH DAMAGE.
- *
- * This file is part of the Contiki operating system.
- *
- * $Id: example-trickle.c,v 1.5 2010/01/15 10:24:37 nifi Exp $
- */
-
 /**
  * \file
- *         Example for using the trickle code in Rime
+ *         Anycast header file
  * \author
- *         Adam Dunkels <adam@sics.se>
+ *         Wei Qiao Toh
  */
 
 #include "contiki.h"
-#include "net/rime/trickle.h"
+#include "anycast.h"
+#include "lib/list.h"
+#include "lib/memb.h"
+#include "anycast.h"
 #include "dev/leds.h"
-#include "button-sensors.h"
+#include <stddef.h> /* For offsetof */
 
+#define PACKET_TIMEOUT (CLOCK_SECOND * 10)
+#define ANYCAST_RES_FLAG 0
+#define ANYCAST_DATA_FLAG 1
+#define ANYCAST_DATA_LEN 126
+
+#define DEBUG 1
+#if DEBUG
 #include <stdio.h>
+#define PRINTF(...) printf(__VA_ARGS__)
+#else
+#define PRINTF(...)
+#endif
 
 #define FLASH_LED(l) {leds_on(l); clock_delay_msec(50); leds_off(l); clock_delay_msec(50);}
-#define SEQSIZE 20
-#define ANYCAST_SVC1 777
-#define ANYCAST_SVC2 888
+
+
+struct anycast_address {
+  struct anycast_address *next;
+  anycast_addr_t address;
+};
+
+struct anycast_res {
+	uint8_t flag;
+	uint8_t seq_number;
+	anycast_addr_t address;
+};
+
+struct anycast_data {
+	uint8_t flag;
+  char data[ANYCAST_DATA_LEN];
+};
+
+struct anycast_send_buffer {
+	struct anycast_send_buffer *next;
+	anycast_addr_t address;
+	uint8_t seq_number;
+	char data[ANYCAST_DATA_LEN];
+};
+
+MEMB(anycast_mem, struct anycast_address, 10);
+
+LIST(send_buf);
+
+static list_t send_buf;
+  
+static uint8_t req_no = 1;
 
 /*---------------------------------------------------------------------------*/
-PROCESS(example_trickle_process, "Trickle example");
-AUTOSTART_PROCESSES(&example_trickle_process);
+PROCESS(address_process, "Print address periodically");
 /*---------------------------------------------------------------------------*/
-static void
-trickle_recv(struct trickle_conn *c)
-{ 
-  printf("Trickle message received: %s\r\n", (char *)packetbuf_dataptr());
-  FLASH_LED(LEDS_BLUE);
-}
-
-const static struct trickle_callbacks trickle_call = {trickle_recv};
-static struct trickle_conn trickle;
-/*---------------------------------------------------------------------------*/
-PROCESS_THREAD(example_trickle_process, ev, data)
+static int 
+netflood_recv(struct netflood_conn *netflood, 
+				const rimeaddr_t * from, 
+				const rimeaddr_t * originator, 
+				uint8_t seqno,	
+				uint8_t hops)
 {
-  PROCESS_EXITHANDLER(trickle_close(&trickle);)
+  uint8_t anycast_addr = *((char *) packetbuf_dataptr());
+
+	struct anycast_conn *c = (struct anycast_conn *)
+  				((char *) netflood - offsetof(struct anycast_conn, netflood_conn));
+
+	struct anycast_address *s;	
+	/* check and serve anycast request */
+	for(s = list_head(c->bind_addrs);
+      s != NULL;
+      s = list_item_next(s)) {
+		if(anycast_addr == (anycast_addr_t)s->address){
+    	PRINTF("Service request on %u\tFrom %02X:%02X\tSeq %u\n",
+							anycast_addr,
+							originator->u8[1],
+          		originator->u8[0],
+          		seqno);
+			mesh_send(&c->mesh_conn, originator);
+			FLASH_LED(LEDS_ALL);
+			return 0;
+		}
+  }
+
+	/* forward anycast request message */
+  PRINTF("NetFlood packet received from %02X:%02X through %02X:%02X, \
+					seqno=%u, hops=%u, msg='%u'\n", 
+					originator->u8[1], 
+					originator->u8[0], 
+					from->u8[1], 
+					from->u8[0], 
+					seqno, 
+					hops, 
+					anycast_addr);
+  
+	FLASH_LED(LEDS_BLUE);
+  return 1;
+}
+/*---------------------------------------------------------------------------*/
+static void netflood_sent(struct netflood_conn *c)
+{
+  PRINTF("NetFlood packet sent ! \n");
+  //PRINTF("Netflood SEQ: %d \n", packetbuf_attr(PACKETBUF_ATTR_MAC_SEQNO));
+  //PRINTF("Message: %s %u\n", (char *)packetbuf_dataptr(), *((char *)packetbuf_dataptr()) );
+}
+/*---------------------------------------------------------------------------*/
+static void netflood_dropped(struct netflood_conn *c)
+{
+  PRINTF("NetFlood packet dropped !\n");
+}
+/*---------------------------------------------------------------------------*/
+static void mesh_sent(struct mesh_conn *c)
+{
+  PRINTF("packet sent\n");
+  //PRINTF("Message: %s\n", (char *)packetbuf_dataptr());
+}
+/*---------------------------------------------------------------------------*/
+static void mesh_timedout(struct mesh_conn *c)
+{
+  PRINTF("packet timedout\n");
+}
+/*---------------------------------------------------------------------------*/
+static void mesh_recv(struct mesh_conn *c, const rimeaddr_t *from, uint8_t hops)
+{
+	/* get first byte to determine whether it's a RES or DATA */
+	uint8_t flag = (uint8_t) *((char *)packetbuf_dataptr());
+	
+	if(flag == ANYCAST_RES_FLAG){
+		struct anycast_res *res = (struct anycast_res *)(char *)packetbuf_dataptr();	
+		mesh_send(c ,from);
+	} else if (flag == ANYCAST_DATA_FLAG) {
+		struct anycast_data	*data = (struct anycast_data *)(char *)packetbuf_dataptr();
+	}	/*else {		
+  	PRINTF("Data received from %02X:%02X: %.*s (%d)\n", 
+						from->u8[0], from->u8[1], 
+						(char *)packetbuf_dataptr(), 
+						packetbuf_datalen());
+  	mesh_send(c, from);
+	}*/
+}
+/*---------------------------------------------------------------------------*/
+static const struct netflood_callbacks netflood_call = { netflood_recv, netflood_sent, netflood_dropped };
+static const struct mesh_callbacks mesh_call = {mesh_recv, mesh_sent, mesh_timedout};
+/*---------------------------------------------------------------------------*/
+void 
+anycast_open(struct anycast_conn *c, uint16_t channels, 
+				const struct anycast_callbacks *callbacks)
+{
+	netflood_open(&c->netflood_conn, CLOCK_SECOND * 2, channels, 
+				&netflood_call);
+  mesh_open(&c->mesh_conn, channels+1, &mesh_call);
+  c->cb = callbacks;
+	LIST_STRUCT_INIT(c, bind_addrs);
+	memb_init(&anycast_mem);
+
+	process_start(&address_process, (char *)c);
+}
+/*---------------------------------------------------------------------------*/
+int 
+anycast_listen_on(struct anycast_conn *c, const anycast_addr_t anycast_addr)
+{
+	static struct anycast_address *addr;
+  addr = memb_alloc(&anycast_mem);
+  if(addr != NULL) {	
+		addr->address = anycast_addr;
+		list_add(c->bind_addrs, addr);
+		PRINTF("[LOG]\t\tBinded anycast addr %u \n", addr->address);
+	}
+}
+/*---------------------------------------------------------------------------*/
+void 
+anycast_send(struct anycast_conn *c, const anycast_addr_t dest)
+{
+	static struct anycast_send_buffer sbuf;
+	char addr_buf[2];
+
+	if(dest>1 && dest<255) {
+		/* store data in buf first */
+		if(sizeof((char *)packetbuf_dataptr()) > ANYCAST_DATA_LEN){
+			PRINTF("[ERROR]\t\tData length out of range.");
+			return;
+		}
+		sbuf.address = dest;
+		sbuf.seq_number = req_no++;
+		snprintf(sbuf.data, packetbuf_datalen(),"%s", (char *)packetbuf_dataptr());
+		PRINTF("[LOG]\t\tSending data to %u, seq %u, data '%s'\n", sbuf.address, sbuf.seq_number, sbuf.data);
+		list_add(send_buf, &sbuf);
+	
+		snprintf(addr_buf, 2, "%c", (uint8_t) sbuf.address);
+    packetbuf_copyfrom(addr_buf, sizeof(addr_buf));
+		netflood_send(&c->netflood_conn, (uint8_t) sbuf.seq_number);
+	}else { 
+		PRINTF("[ERROR]\t\tAnycast address out of range.\n");
+	}
+	
+}
+/*---------------------------------------------------------------------------*/
+void 
+anycast_close(struct anycast_conn *c)
+{
+	struct anycast_address *s;
+	while(list_length(c->bind_addrs) > 0) {
+		s = list_chop(c->bind_addrs);
+		PRINTF("Closing anycast listen address: %u\n", s->address);
+		memb_free(&anycast_mem, s);
+	}
+	netflood_close(&c->netflood_conn);
+	mesh_close(&c->mesh_conn);
+}
+/*---------------------------------------------------------------------------*/
+PROCESS_THREAD(address_process, ev, data)
+{
+  static struct etimer et;
+	static struct anycast_conn *a = NULL;
+	struct anycast_address *s;	
+	uint8_t i = 0;
+	rimeaddr_t addr;
+	
+	/* set only once */
+	if(a == NULL){
+		a = (struct anycast_conn *)data;
+	}
+
+	/* check everytime */
+  rimeaddr_copy(&addr, &rimeaddr_node_addr);
+
   PROCESS_BEGIN();
 
-  trickle_open(&trickle, CLOCK_SECOND, 130, &trickle_call);
-  SENSORS_ACTIVATE(button_sensor);
-  SENSORS_ACTIVATE(button2_sensor);
-
-  // Set TX power - values range from 0x00 (-30dBm = 1uW) to 0x12 (+4.5dBm = 2.8mW)
-  //
-  set_power(0x01);
-
-	static int s3_req_no=1;
-	static int s2_req_no=1;
-
   while(1) {
-    PROCESS_WAIT_EVENT_UNTIL(ev == sensors_event && (data == &button_sensor || data == &button2_sensor));
+		/* Delay 20 seconds */
+    etimer_set(&et, CLOCK_SECOND * 20);
 
-		char buf[SEQSIZE];
-		if(data == &button_sensor){
-			snprintf(buf, SEQSIZE, "ANYCAST:%d;SEQ:%d", ANYCAST_SVC1, s3_req_no++);
-		}else{
-      snprintf(buf, SEQSIZE, "ANYCAST:%d;SEQ:%d", ANYCAST_SVC2, s2_req_no++);
-		}
-    packetbuf_copyfrom(buf, SEQSIZE);
-    printf("Sending trickle message: %s\n", (char *)packetbuf_dataptr());
-    trickle_send(&trickle);
-    FLASH_LED(LEDS_GREEN);
+    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
+
+    PRINTF("[LOG]\t\tAddresses{ RIME:%02X:%02X", addr.u8[1], addr.u8[0]);
+		
+		for(s = list_head(a->bind_addrs); s != NULL; s = s->next ) {
+			PRINTF("\tANYCAST%u:%u", ++i, s->address);
+  	}
+		PRINTF(" }\n");
   }
 
   PROCESS_END();
 }
-/*---------------------------------------------------------------------------*/
+
+
