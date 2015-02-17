@@ -14,7 +14,7 @@
 #define FLASH_LED(l) {leds_on(l);	clock_delay_msec(50);	leds_off(l);clock_delay_msec(50);}
 
 #define ANYCAST_CHANNEL 129
-#define S2_ANYCAST_SVC 101
+#define S2_ANYCAST_SVC 111
 #define S3_ANYCAST_SVC 102
 #define ANYCAST_ADDR_1 103
 #define ANYCAST_ADDR_2 104 
@@ -23,25 +23,39 @@
 PROCESS(anycast_process, "Anycast");
 AUTOSTART_PROCESSES(&anycast_process);
 /*---------------------------------------------------------------------------*/
-void anycast_recv(struct anycast_conn *c, const rimeaddr_t * originator,
-    const anycast_addr_t anycast_addr)
+void anycast_recv(struct anycast_conn *c, 
+									const rimeaddr_t * originator,
+    							const anycast_addr_t anycast_addr, 
+									char *data)
 {
 	printf("---------------App layer------------------\n");
-	printf("Anycast recv.\n");
+	printf("Anycast recv. Data-> '%s'\n", data);
+	printf("------------------------------------------\n");
 }
 /*---------------------------------------------------------------------------*/
-void anycast_sent(struct anycast_conn *c)
+void anycast_sent(struct anycast_conn *c, 
+									const anycast_addr_t anycast_addr, 
+									char *data)
 {
-
-	printf("Anycast sent.\n");
+	printf("---------------App layer------------------\n");
+	printf("'%s' sent to anycast server %u.\n", data, anycast_addr);
+	printf("------------------------------------------\n");
 }
 /*---------------------------------------------------------------------------*/
-void anycast_timedout(struct anycast_conn *c, const uint8_t err_code)
+void anycast_timedout(struct anycast_conn *c, 
+											const uint8_t err_code)
 {
-	printf("Anycast timedout.\n");
+	printf("---------------App layer------------------\n");
+	if(err_code == ERR_NO_SERVER_FOUND) {
+		printf("Anycast server not found.\n");
+	} else if (err_code == ERR_NO_ROUTE) {
+		printf("Sending data failed.\n");
+	}
+	printf("------------------------------------------\n");
 }
 /*---------------------------------------------------------------------------*/
-static const struct anycast_callbacks anycast_call = { anycast_recv, anycast_sent, anycast_timedout };
+static const struct anycast_callbacks anycast_call = 
+				{ anycast_recv, anycast_sent, anycast_timedout };
 static struct anycast_conn anycast;
 /*---------------------------------------------------------------------------*/
 PROCESS_THREAD(anycast_process, ev, data)
@@ -58,7 +72,8 @@ PROCESS_THREAD(anycast_process, ev, data)
   addr.u8[0] = 0x09;
   rimeaddr_set_node_addr(&addr);
 
-  /* Set TX power - values range from 0x00 (-30dBm = 1uW) to 0x12 (+4.5dBm = 2.8mW) */
+  /* Set TX power - values range from 0x00 (-30dBm = 1uW) to 
+	/		0x12 (+4.5dBm = 2.8mW) */
   /*set_power(0x01);*/
 
 	anycast_open(&anycast, ANYCAST_CHANNEL, &anycast_call);
@@ -68,7 +83,8 @@ PROCESS_THREAD(anycast_process, ev, data)
 	anycast_listen_on(&anycast, ANYCAST_ADDR_2);
 
   while(1) {
-		PROCESS_WAIT_EVENT_UNTIL(ev == sensors_event && (data == &button_sensor || data == &button2_sensor));
+		PROCESS_WAIT_EVENT_UNTIL(ev == sensors_event && 
+						(data == &button_sensor || data == &button2_sensor));
 	
 		char buf[20];
 		snprintf(buf, 7, "Gordon");

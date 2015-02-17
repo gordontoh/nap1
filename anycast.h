@@ -12,15 +12,17 @@
 #include "net/rime/mesh.h"
 #include "lib/list.h"
 
-/* 1 byte anycast address */
-typedef uint8_t anycast_addr_t;
-
 /* no anycast server replied to the request */
 #define ERR_NO_SERVER_FOUND 0
-/* the mesh layer could not found a route for the data packet to the nearest anycast server */
+
+/* the mesh layer could not found a route for the data packet to the nearest 
+		anycast server */
 #define ERR_NO_ROUTE 1
 
 struct anycast_conn;
+
+/* 1 byte anycast address */
+typedef uint8_t anycast_addr_t;
 
 /**
  * \brief     Anycast callbacks
@@ -36,7 +38,7 @@ struct anycast_callbacks {
  *
  */
   void (* recv)(struct anycast_conn *c, const rimeaddr_t * originator,
-    const anycast_addr_t anycast_addr);
+    const anycast_addr_t anycast_addr, char *data);
  /**
  * \brief      Callback for sent anycast data message
  * \param c    A pointer to a struct anycast_conn
@@ -45,7 +47,8 @@ struct anycast_callbacks {
  * server has been figured out.
  *
  */
-  void (* sent)(struct anycast_conn *c);
+  void (* sent)(struct anycast_conn *c,	const anycast_addr_t anycast_addr,
+		 char *data);
  /**
  * \brief      Timeout callback
  * \param c    A pointer to a struct anycast_conn
