@@ -10,11 +10,11 @@
 #include "lib/list.h"
 #include "lib/memb.h"
 #include "dev/leds.h"
-#include <string.h>
+//#include <string.h>
 #include <stdio.h>
 #include <stddef.h> /* For offsetof */
 
-#define PACKET_TIMEOUT (CLOCK_SECOND * 10)
+#define ANYCAST_TIMEOUT (CLOCK_SECOND * 10)
 #define ANYCAST_RES_FLAG 0
 #define ANYCAST_DATA_FLAG 1
 #define ANYCAST_DATA_LEN 50
@@ -81,7 +81,7 @@ static uint8_t seq_no = 0;
 /*---------------------------------------------------------------------------*/
 PROCESS(status_process, "Print addresses/requests buffer periodically");
 /*---------------------------------------------------------------------------*/
-void *
+struct anycast_send_buffer *
 get_send_buf(const anycast_addr_t addr, const uint8_t seq_no)
 {
 	struct anycast_send_buffer *s_buf;
@@ -89,7 +89,7 @@ get_send_buf(const anycast_addr_t addr, const uint8_t seq_no)
   	for(s_buf = list_head(send_buf); s_buf != NULL; s_buf = s_buf->next ) {
 		if(s_buf->address == addr && s_buf->seq_number == seq_no) {
 			list_remove(send_buf, s_buf);
-			return s_buf;
+			return (struct anycast_send_buffer *) s_buf;
 		}
   	}
 	return NULL;
@@ -200,7 +200,7 @@ mesh_recv(struct mesh_conn *c, const rimeaddr_t *from, uint8_t hops)
 	uint8_t flag = (uint8_t) *((char *)packetbuf_dataptr());
 	
 	if(flag == ANYCAST_RES_FLAG){
-		struct anycast_res *res = (struct anycast_res *)packetbuf_dataptr();	
+		struct anycast_res *res = (struct anycast_res *)packetbuf_dataptr();
 		struct anycast_send_buffer *s_buf;
 		struct anycast_data a_data;
 		
@@ -209,13 +209,15 @@ mesh_recv(struct mesh_conn *c, const rimeaddr_t *from, uint8_t hops)
 			from->u8[1], 
 			from->u8[0]);
 	
-		s_buf = (struct anycast_send_buffer *)get_send_buf(res->address, res->seq_number);
+		s_buf = get_send_buf(res->address, res->seq_number);
 		if(s_buf != NULL) {
-			PRINTF("[LOG]\t\tSending data '%s'...\n", s_buf->data);
+			PRINTF("[LOG]\t\tSending data '%s'...\n", 
+				s_buf->data);
 			
 			a_data.flag = 1;
 			a_data.address = s_buf->address;
-			strcpy(a_data.data, s_buf->data);
+			snprintf(a_data.data, sizeof(s_buf->data), "%s", s_buf->data);
+			//strcpy(a_data.data, s_buf->data);
 
 			packetbuf_copyfrom((char *)&a_data, sizeof(a_data));
 			mesh_send(c ,from);
@@ -240,7 +242,7 @@ mesh_recv(struct mesh_conn *c, const rimeaddr_t *from, uint8_t hops)
 	} else if (flag == ANYCAST_DATA_FLAG) {
 		struct anycast_data *a_data = (struct anycast_data *)packetbuf_dataptr();
 		struct anycast_conn *a_conn = (struct anycast_conn *)
-    				((char *)c - offsetof(struct anycast_conn, mesh_conn));
+    			((char *)c - offsetof(struct anycast_conn, mesh_conn));
 		
 		PRINTF("[LOG]\t\tAnycast data '%s' received from %02X:%02X\n",
 			a_data->data,
@@ -325,7 +327,7 @@ anycast_send(struct anycast_conn *c, const anycast_addr_t dest)
 				s_buf->data);
 
 			list_add(send_buf, s_buf);
-			ctimer_set(&s_buf->ctimer, CLOCK_SECOND * 10, expire_buf_element, s_buf);
+			ctimer_set(&s_buf->ctimer, ANYCAST_TIMEOUT, expire_buf_element, s_buf);
 			
 			snprintf(addr_buf, 2, "%c", (uint8_t) s_buf->address);
     			packetbuf_copyfrom(addr_buf, sizeof(addr_buf));
@@ -360,7 +362,7 @@ PROCESS_THREAD(status_process, ev, data)
 {
 	static struct etimer et;
 	static struct anycast_conn *a_conn = NULL;
-	struct anycast_bind_address *s = NULL;	
+	struct anycast_bind_address *a = NULL;	
 	struct anycast_send_buffer *b = NULL; 
 	uint8_t i = 0;
 	char buf[100];
@@ -368,7 +370,7 @@ PROCESS_THREAD(status_process, ev, data)
 	
 	/* store anycast connection only during the first time */
 	if(a_conn == NULL){
-		a_conn = (struct anycast_conn *)data;
+		a_conn = (struct anycast_conn *) data;
 	}
 	
 	/* check everytime */
@@ -377,15 +379,17 @@ PROCESS_THREAD(status_process, ev, data)
   	PROCESS_BEGIN();
 
   	while(1) {
-		/* delay 30 seconds */
+		/* print every 10 seconds */
     		etimer_set(&et, CLOCK_SECOND * 10);
 
     		PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
 
-		snprintf(buf, 100, "[ADDR]\t\tRIME:%02X:%02X", addr.u8[1], addr.u8[0]);	
+		snprintf(buf, 100, "[ADDR]\t\tRIME:%02X:%02X", 
+			addr.u8[1], addr.u8[0]);	
 	
-		for(s = list_head(a_conn->bind_addrs); s != NULL; s = s->next ) {
-			snprintf(buf, 100, "%s | ANYCAST%u:%u", buf, ++i, s->address);	
+		for(a = list_head(a_conn->bind_addrs); a != NULL; a = a->next){
+			snprintf(buf, 100, "%s | ANYCAST%u:%u", 
+				buf, ++i, a->address);	
   		}
 		
 		PRINTF("%s\n", buf);
