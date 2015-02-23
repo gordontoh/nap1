@@ -1,8 +1,19 @@
 /**
+ * \defgroup anycast Anycast Protocol
+ * @{
+ *
+ * The anycast module send a data packet to a anycast server in the network.
+ *
+ * \sections channels Channels
+ *
+ * The anycast modules uses 4 channels; 1 for the netflood and 3 for the mesh.
+ */
+
+/**
  * \file
  *         Anycast header file
  * \author
- *         UCL GZ04 students 2015
+ *         Wei Qiao Toh
  */
 
 #ifndef __ANYCAST_H__
@@ -12,11 +23,22 @@
 #include "net/rime/mesh.h"
 #include "lib/list.h"
 
+
+#define ANYCAST_TIMEOUT (CLOCK_SECOND * 10)
+#define ANYCAST_RES_FLAG 0
+#define ANYCAST_DATA_FLAG 1
+
+/*
+ * \brief	maximum length of data application is allowed to send
+ */
+#define ANYCAST_DATA_LEN 103
+
 /* no anycast server replied to the request */
 #define ERR_NO_SERVER_FOUND 0
 
-/* the mesh layer could not found a route for the data packet to the nearest 
-		anycast server */
+/* mesh layer could not found a route for the data packet to the responded 
+ * anycast server 
+ */
 #define ERR_NO_ROUTE 1
 
 struct anycast_conn;
@@ -33,6 +55,7 @@ struct anycast_callbacks {
  * \param c    A pointer to a struct anycast_conn
  * \param originator The link-layer address of the sender
  * \param anycast_addr The anycast address of the server
+ * \param data A pointer to the data received
  *
  * This function is called when the server receives an anycast data message.
  *
@@ -42,6 +65,8 @@ struct anycast_callbacks {
  /**
  * \brief      Callback for sent anycast data message
  * \param c    A pointer to a struct anycast_conn
+ * \param anycast_addr The anycast address of the server
+ * \param data A pointer to the data received
  *
  * This function is called when the actual data packet is sent after the nearest
  * server has been figured out.
@@ -62,6 +87,9 @@ struct anycast_callbacks {
   void (* timedout)(struct anycast_conn *c, const uint8_t err_code);
 };
 
+/**
+ * \brief	Stores variables for an opened anycast connection
+ */
 struct anycast_conn {
   struct mesh_conn mesh_conn;
   struct netflood_conn netflood_conn;
@@ -130,3 +158,4 @@ void anycast_send(struct anycast_conn *c, const anycast_addr_t dest);
 void anycast_close(struct anycast_conn *c);
 
 #endif /* __ANYCAST_H__ */
+/** @} */

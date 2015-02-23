@@ -20,7 +20,7 @@
 }
 
 #define ANYCAST_CHANNEL 129
-#define S2_ANYCAST_SVC 111
+#define S2_ANYCAST_SVC 101
 #define S3_ANYCAST_SVC 102
 #define ANYCAST_ADDR_1 103
 #define ANYCAST_ADDR_2 104 
@@ -34,7 +34,7 @@ anycast_recv(struct anycast_conn *c, const rimeaddr_t * originator,
 	const anycast_addr_t anycast_addr, char *data)
 {
 	printf("---------------App layer------------------\n");
-	printf("Anycast recv. Data-> '%s'\n", data);
+	printf("'%s' received on anycast service %u.\n", data, anycast_addr);
 	printf("------------------------------------------\n");
 }
 /*---------------------------------------------------------------------------*/
@@ -52,9 +52,9 @@ anycast_timedout(struct anycast_conn *c, const uint8_t err_code)
 {
 	printf("---------------App layer------------------\n");
 	if(err_code == ERR_NO_SERVER_FOUND) {
-		printf("Anycast server not found.\n");
+		printf("Anycast server not found. (netflood failed)\n");
 	} else if (err_code == ERR_NO_ROUTE) {
-		printf("Sending data failed.\n");
+		printf("Sending data failed. (mesh timed out)\n");
 	}
 	printf("------------------------------------------\n");
 }
@@ -78,8 +78,9 @@ PROCESS_THREAD(anycast_process, ev, data)
   	rimeaddr_set_node_addr(&addr);
 
   	/* Set TX power - values range from 0x00 (-30dBm = 1uW) to 
-	/		0x12 (+4.5dBm = 2.8mW) */
-  	/*set_power(0x01);*/
+	 * 0x12 (+4.5dBm = 2.8mW) 
+	 */
+  	set_power(0x04); 
 
 	anycast_open(&anycast, ANYCAST_CHANNEL, &anycast_call);
 
@@ -91,8 +92,8 @@ PROCESS_THREAD(anycast_process, ev, data)
 		PROCESS_WAIT_EVENT_UNTIL(ev == sensors_event && 
 			(data == &button_sensor || data == &button2_sensor));
 	
-		char buf[20];
-		snprintf(buf, 7, "Gordon");
+		char buf[50];
+		snprintf(buf, 50, "Hello from node 9 ^_^");
     		packetbuf_copyfrom(buf, sizeof(buf));
 		
 		if(data == &button_sensor) {

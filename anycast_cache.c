@@ -1,11 +1,11 @@
 /**
- * \addtogroup anycast Anycast Protocol
+ * \defgroup anycast_cached Anycast Protocol with Caching
  * @{
  */
 
 /**
  * \file
- *         Anycast implementation file
+ *         Anycast with caching implementation file
  * \author
  *         Wei Qiao Toh
  */
@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stddef.h> /* For offsetof */
 
+#define PRINT_STATUS 0
 #define DEBUG 1
 #if DEBUG
 #define PRINTF(...) printf(__VA_ARGS__)
@@ -34,7 +35,7 @@
 }
 
 /**
- * \brief Stores anycast address nodes listens on
+ * \brief     stores anycast address nodes listens on
  */
 struct anycast_bind_address {
 	struct anycast_bind_address *next;
@@ -42,7 +43,7 @@ struct anycast_bind_address {
 };	
 
 /**
- * \brief For responding to an anycast request
+ * \brief     for responding to an anycast request
  */
 struct anycast_res {
 	uint8_t flag;
@@ -51,7 +52,7 @@ struct anycast_res {
 };
 
 /**
- * \brief For sending data to an anycast server
+ * \brief	for sending data to an anycast server
  */
 struct anycast_data {
 	uint8_t flag;
@@ -60,7 +61,7 @@ struct anycast_data {
 };
 
 /**
- * \brief Data structure for each requests made by application
+ * \brief	data structure for each requests made by application
  */
 struct anycast_send_buffer {
 	struct anycast_send_buffer *next;
@@ -69,6 +70,16 @@ struct anycast_send_buffer {
 	char data[ANYCAST_DATA_LEN];
 	struct anycast_conn *conn;
 	struct ctimer ctimer; 
+};
+
+/**
+ * \brief	for caching anycast server to their RIME address
+ */
+struct anycast_server_cache {
+	struct anycast_server_cache *next;
+	anycast_addr_t anycast_addr;
+	rimeaddr_t rime_addr;	
+	struct ctimer ctimer;
 };
 
 /* listen to maximum of 5 anycast address */
@@ -80,8 +91,13 @@ MEMB(send_buf_mem, struct anycast_send_buffer, 5);
 /* linked-list buffer that stores requests made by application*/
 LIST(send_buf);
 
+LIST(anycast_cache);
+
+MEMB(anycast_cache_mem, struct anycast_server_cache, 5);
+//static list_t send_buf;
+ 
 /** 
- * \brief sequence number which is incremented for each send request
+ * \brief	sequence number which is incremented for each send request
  */
 static uint8_t seq_no = 0;
 
@@ -99,7 +115,7 @@ PROCESS(status_process, "Print addresses/requests buffer periodically");
  *             the return struct after using. 
  */
 static struct anycast_send_buffer *
-buf_remove(const anycast_addr_t addr, const uint8_t seq_no)
+get_send_buf(const anycast_addr_t addr, const uint8_t seq_no)
 {
 	struct anycast_send_buffer *s_buf;
 
@@ -113,30 +129,55 @@ buf_remove(const anycast_addr_t addr, const uint8_t seq_no)
 }
 /*---------------------------------------------------------------------------*/
 /**
- * \brief       Called by the callback timer to expire buffered send request
- * \param n 	Pointer to the expired buffer element
+ * \brief       Removes and returns buffered anycast send requests
+ * \param addr  Anycast address the application sends to
+ * \param seq_no Sequence number the anycast request was received
  *
- *             	This function is called by the callback timer when a send
- *             	request has timedout. The send request would be removed from 
- *             	the buffer and memory would be freed. Callback on the 
- *             	on the application timedout would be called with and error 
- *		code of ERR_NO_SERVER_FOUND.
+ *             This function removes the anycast sent request stored in the 
+ *             linked-list buffer and return the pointer to the struct
+ *             of the element. Caller of the function is expected to free 
+ *             the return struct after using. 
  */
+struct anycast_server_cache *
+check_cache(const anycast_addr_t addr)
+{
+        struct anycast_server_cache *c;
+        for(c = list_head(anycast_cache); c != NULL; c = c->next) {
+                if(c->anycast_addr == addr) {
+                        return c;
+                }
+        }
+        return NULL;
+}
+
+/*---------------------------------------------------------------------------*/
 static void
-buf_expired(void *n)
+expire_anycast_cache(void *n)
+{
+	struct anycast_server_cache *cache = n;
+	
+	PRINTF("[CACHE]\t\tCache expired -> %u[%02X:%02X]\n",
+                cache->anycast_addr,
+                cache->rime_addr.u8[1],
+                cache->rime_addr.u8[0]);
+
+	list_remove(anycast_cache, cache);
+	memb_free(&anycast_cache_mem, cache);
+}
+/*---------------------------------------------------------------------------*/
+static void
+expire_buf_element(void *n)
 {
 	struct anycast_send_buffer *s_buf = n;
 	
-	PRINTF("[BUF]\t\tBuffer entry expired: %u|%u|'%s'\n", 
-		s_buf->seq_number, 
+	PRINTF("[BUF]\t\tBuffer entry expired -> %u:%u:'%s'\n", 
 		s_buf->address,	
+		s_buf->seq_number, 
 		s_buf->data);
   
+	s_buf->conn->cb->timedout(s_buf->conn, ERR_NO_SERVER_FOUND);
 	list_remove(send_buf, s_buf);
 	memb_free(&send_buf_mem, s_buf);
-
-        /* notify application of netflood timed-out. */
-	s_buf->conn->cb->timedout(s_buf->conn, ERR_NO_SERVER_FOUND);
 }
 /*---------------------------------------------------------------------------*/
 static int 
@@ -218,7 +259,6 @@ mesh_timedout(struct mesh_conn *c)
 	
   	PRINTF("[LOG]\t\tMesh packet timedout.\n");
 
-	/* notify application of mesh packet timed-out. */
 	if(a_conn->cb->timedout) {
 		a_conn->cb->timedout(a_conn, ERR_NO_ROUTE);	
 	}
@@ -230,18 +270,35 @@ mesh_recv(struct mesh_conn *c, const rimeaddr_t *from, uint8_t hops)
 	/* get first byte to determine whether it's a RES or DATA */
 	uint8_t flag = (uint8_t) *((char *)packetbuf_dataptr());
 	
-	if(flag == ANYCAST_RES_FLAG){	/* response from netflood */
+	if(flag == ANYCAST_RES_FLAG){
 		struct anycast_res *res = (struct anycast_res *)packetbuf_dataptr();
 		struct anycast_send_buffer *s_buf;
 		struct anycast_data a_data;
-		
-		PRINTF("[LOG]\t\tAnycast server %u at %02X:%02X (%u hops)\n",
+		struct anycast_server_cache *cache;		
+
+		PRINTF("[LOG]\t\tAnycast server %u at %02X:%02X (%u hops)\n", 
 			res->address, 
 			from->u8[1], 
 			from->u8[0],
 			hops);
-	
-		s_buf = buf_remove(res->address, res->seq_number);
+
+		/* store in cache if new, otherwise renew*/
+		cache = check_cache(res->address);
+		if(cache == NULL || rimeaddr_cmp(&cache->rime_addr, from) == 0) {
+			cache = memb_alloc(&anycast_cache_mem);
+			if(cache != NULL) {
+				cache->anycast_addr = res->address;
+		        	rimeaddr_copy(&cache->rime_addr, from);
+				list_add(anycast_cache, cache);
+	                	ctimer_set(&cache->ctimer, ANYCAST_TIMEOUT, expire_anycast_cache, cache);
+				PRINTF("[CACHE]\t\tCache %u(%02X:%02X) added.\n", cache->anycast_addr, cache->rime_addr.u8[1], cache->rime_addr.u8[0]);
+			}
+		} else {
+               		ctimer_set(&cache->ctimer, ANYCAST_TIMEOUT, expire_anycast_cache, cache);
+			PRINTF("[CACHE]\t\tCache %u(%02X:%02X) renewed.\n", cache->anycast_addr, cache->rime_addr.u8[1], cache->rime_addr.u8[0]);
+		}
+			
+		s_buf = get_send_buf(res->address, res->seq_number);
 		if(s_buf != NULL) {
 			PRINTF("[LOG]\t\tSending data '%s'...\n", 
 				s_buf->data);
@@ -253,9 +310,9 @@ mesh_recv(struct mesh_conn *c, const rimeaddr_t *from, uint8_t hops)
 			packetbuf_copyfrom((char *)&a_data, sizeof(a_data));
 			mesh_send(c ,from);
 			
-			PRINTF("[BUF]\t\tRemoved %u|%u|'%s' from send buffer.\n", 
-				s_buf->seq_number, 
+			PRINTF("[BUF]\t\tRemoved %u:%u:'%s' from send buffer.\n", 
 				s_buf->address, 
+				s_buf->seq_number, 
 				s_buf->data);
 			
 			/* stop call backtimer since data has already been sent */ 
@@ -265,26 +322,24 @@ mesh_recv(struct mesh_conn *c, const rimeaddr_t *from, uint8_t hops)
 			memb_free(&send_buf_mem, s_buf);
 
 		} else {
-			PRINTF("[WARNING]\tRespond from Anycast Server %u[%02x:%02X] ignored (%u hops).\n", 
+			PRINTF("[WARNING]\tRespond from Anycast Server %u(%02x:%02X) ignored.\n", 
 				res->address, 
 				from->u8[1], 
-				from->u8[0],
-				hops);
+				from->u8[0]);
 		}
-	} else if (flag == ANYCAST_DATA_FLAG) {	/* received data from client */
+	} else if (flag == ANYCAST_DATA_FLAG) {
 		struct anycast_data *a_data = (struct anycast_data *)packetbuf_dataptr();
 		struct anycast_conn *a_conn = (struct anycast_conn *)
     			((char *)c - offsetof(struct anycast_conn, mesh_conn));
 		
-		PRINTF("[LOG]\t\tAnycast data '%s' received from %02X:%02X (%u hops)\n",
+		PRINTF("[LOG]\t\tAnycast data '%s' received from %02X:%02X\n",
 			a_data->data,
 			from->u8[1], 
-			from->u8[0],
-			hops);
+			from->u8[0]);
 
-		/* notify application of data received */
+		/* callback to application to notify data received */
 		a_conn->cb->recv(a_conn, from, a_data->address, a_data->data);
-	} 
+	}			
 }
 /*---------------------------------------------------------------------------*/
 static const struct netflood_callbacks netflood_call = 
@@ -308,9 +363,10 @@ anycast_open(struct anycast_conn *c, uint16_t channels,
 	LIST_STRUCT_INIT(c, bind_addrs);
 	memb_init(&anycast_mem);
 	memb_init(&send_buf_mem);
+	memb_init(&anycast_cache_mem);
 	
 	/* process for printing rime address, anycast address and send buffer */
-	if(DEBUG) {
+	if(DEBUG && PRINT_STATUS) {
 		process_start(&status_process, (char *)c);
 	}
 }
@@ -338,42 +394,71 @@ void
 anycast_send(struct anycast_conn *c, const anycast_addr_t dest)
 {
 	static struct anycast_send_buffer *s_buf;
+	static struct anycast_server_cache *cache;
 	char addr_buf[2];
 
-	 /* check whether data to be sent conforms to size limit */
-        if(packetbuf_datalen() > ANYCAST_DATA_LEN) {
-                PRINTF("[ERROR]\t\tData length out of range.");
-                return;
-        }
+	/* check whether data to be sent conforms to size limit */
+	if(sizeof((char *)packetbuf_dataptr()) > ANYCAST_DATA_LEN){
+		PRINTF("[ERROR]\t\tData length out of range.");
+		return;
+	}
 
-        if(dest<0 || dest>255) {
-                PRINTF("[ERROR]\t\tAnycast address out of range.\n");
-                return;
-        }
+	if(dest<0 || dest>255) {
+		PRINTF("[ERROR]\t\tAnycast address out of range.\n");
+		return;
+	}
 
-	s_buf = memb_alloc(&send_buf_mem);
-	if(s_buf != NULL) {
-		
-		/* store data in buf first */
-		s_buf->address = dest;
-		s_buf->seq_number = seq_no++;
-		s_buf->conn = c;
-		snprintf(s_buf->data, packetbuf_datalen(), "%s", (char *)packetbuf_dataptr());
 			
-		PRINTF("[LOG]\t\tReceived anycast send. seq:%u|svr:%u|data:'%s'\n",
-			s_buf->seq_number, 
-			s_buf->address, 
-			s_buf->data);
+	cache = check_cache(dest);
+	if(cache == NULL) {
+		s_buf = memb_alloc(&send_buf_mem);
+		if(s_buf != NULL) {
+			/* store data in send_buf */
+                	s_buf->address = dest;
+                	s_buf->seq_number = seq_no++;
+                	s_buf->conn = c;
+                	snprintf(s_buf->data, packetbuf_datalen(), "%s", (char *)packetbuf_dataptr());
 
-		list_add(send_buf, s_buf);
-		ctimer_set(&s_buf->ctimer, ANYCAST_TIMEOUT, buf_expired, s_buf);
-			
-		snprintf(addr_buf, 2, "%c", (uint8_t) s_buf->address);
-  		packetbuf_copyfrom(addr_buf, sizeof(addr_buf));
-		netflood_send(&c->netflood_conn, (uint8_t) s_buf->seq_number);
+              		PRINTF("[LOG]\t\tApplication sending-> server:%u|seq:%u|data:'%s'\n",
+                        	s_buf->address,
+                        	s_buf->seq_number,
+                	        s_buf->data);
+
+        	        list_add(send_buf, s_buf);
+	                ctimer_set(&s_buf->ctimer, ANYCAST_TIMEOUT, expire_buf_element, s_buf);
+
+
+			snprintf(addr_buf, 2, "%c", (uint8_t) s_buf->address);
+			packetbuf_copyfrom(addr_buf, sizeof(addr_buf));
+			netflood_send(&c->netflood_conn, (uint8_t) s_buf->seq_number);
+		} else {
+                	PRINTF("[ERROR]\t\tSend buffer full!\n");
+		}
+
 	} else {
-		PRINTF("[ERROR]\t\tSend buffer full!\n");
-	}	
+	                struct anycast_data a_data;
+			
+			PRINTF("[LOG]\t\tApplication sending-> server:%u|seq:%u|data:'%s'\n",
+                                dest,
+                                seq_no++,
+                                (char *)packetbuf_dataptr());
+
+			PRINTF("[CACHE]\t\tAnycast address in cache. %u(%02x:%02X)\n",
+				cache->anycast_addr,
+				cache->rime_addr.u8[1],
+				cache->rime_addr.u8[0]);
+
+			PRINTF("[LOG]\t\tSending data '%s'...\n",
+                                (char *)packetbuf_dataptr());
+
+                        a_data.flag = 1;
+                        a_data.address = s_buf->address;
+                        snprintf(a_data.data, packetbuf_datalen(), "%s", (char *)packetbuf_dataptr());
+
+                        packetbuf_copyfrom((char *)&a_data, sizeof(a_data));
+                        mesh_send(&c->mesh_conn , &cache->rime_addr);
+
+	}
 }
 /*---------------------------------------------------------------------------*/
 void 
@@ -394,15 +479,14 @@ anycast_close(struct anycast_conn *c)
 	mesh_close(&c->mesh_conn);
 }
 /*---------------------------------------------------------------------------*/
-/**
- * \brief	Process that prints debug messages periodically.
- */
 PROCESS_THREAD(status_process, ev, data)
 {
 	static struct etimer et;
 	static struct anycast_conn *a_conn = NULL;
 	struct anycast_bind_address *a = NULL;	
 	struct anycast_send_buffer *b = NULL; 
+
+	struct anycast_server_cache *c = NULL;
 	uint8_t i = 0;
 	char buf[100];
 	rimeaddr_t addr;
@@ -433,12 +517,19 @@ PROCESS_THREAD(status_process, ev, data)
 		
 		PRINTF("%s\n", buf);
 
+		i=0;
 		for(b = list_head(send_buf); b != NULL; b = b->next ) {
-      			PRINTF("[BUF]\t\t%u|%u|'%s'\n", 
-				b->seq_number,
+      			PRINTF("[BUF]\t\t(%u) %u|%u|'%s'\n", 
+				++i, 
 				b->address, 
+				b->seq_number, 
 				b->data);
     		}
+
+	for(c = list_head(anycast_cache); c != NULL; c = c->next) {
+        PRINTF("[CACHE]\t\t%u(%02X:%02X)\n", c->anycast_addr, c->rime_addr.u8[1], c->rime_addr.u8[0]);
+        }
+
   	}
 
   	PROCESS_END();
