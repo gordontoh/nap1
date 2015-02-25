@@ -73,9 +73,12 @@ PROCESS_THREAD(anycast_process, ev, data)
 
 	/* Set RIME address according to OrisenPrime serial no. */
 	rimeaddr_t addr;
-	rimeaddr_copy(&addr, &rimeaddr_null);
-  	addr.u8[0] = 0x09;
-  	rimeaddr_set_node_addr(&addr);
+	rimeaddr_copy(&addr, &rimeaddr_node_addr);
+	if(!(addr.u8[1]==0 && addr.u8[0]==0x09)) {
+		rimeaddr_copy(&addr, &rimeaddr_null);
+  		addr.u8[0] = 0x09;
+  		rimeaddr_set_node_addr(&addr);
+	}
 
   	/* Set TX power - values range from 0x00 (-30dBm = 1uW) to 
 	 * 0x12 (+4.5dBm = 2.8mW) 
@@ -92,8 +95,8 @@ PROCESS_THREAD(anycast_process, ev, data)
 		PROCESS_WAIT_EVENT_UNTIL(ev == sensors_event && 
 			(data == &button_sensor || data == &button2_sensor));
 	
-		char buf[50];
-		snprintf(buf, 50, "Hello from node 9 ^_^");
+		char buf[ANYCAST_DATA_LEN];
+		snprintf(buf, ANYCAST_DATA_LEN, "Hello from Gordon (node 9)");
     		packetbuf_copyfrom(buf, sizeof(buf));
 		
 		if(data == &button_sensor) {
