@@ -5,7 +5,8 @@
 
 /**
  * \file
- *         Anycast with caching implementation file
+ *         Anycast with caching implementation file. Shares the same anycast.h
+ *	   header file as anycast.c. To use, rename this file as anycast.c.
  * \author
  *         Wei Qiao Toh
  */
