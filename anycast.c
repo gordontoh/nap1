@@ -18,6 +18,9 @@
 #include <stdio.h>
 #include <stddef.h> /* For offsetof */
 
+/**
+ * \brief To turn off printing of debug message, set value to 0
+ */
 #define DEBUG 1
 #if DEBUG
 #define PRINTF(...) printf(__VA_ARGS__)
@@ -25,6 +28,9 @@
 #define PRINTF(...)
 #endif
 
+/**
+ * \brief To flash the leds on OrisenPrime
+ */
 #define FLASH_LED(l)		\
 { 				\
 	leds_on(l);		\
@@ -71,13 +77,19 @@ struct anycast_send_buffer {
 	struct ctimer ctimer; 
 };
 
-/* listen to maximum of 5 anycast address */
+/**
+ * \brief Allocate memory for 5(maximum) anycast address to listen on
+ */
 MEMB(anycast_mem, struct anycast_bind_address, 5);
 
-/* store maximum of 5 anycast send request */
+/**
+ * \brief Allocate memory for 5(maximum) anycast send request 
+ */
 MEMB(send_buf_mem, struct anycast_send_buffer, 5);
 
-/* linked-list buffer that stores requests made by application*/
+/**
+ * \brief Declare linked-list buffer that stores requests made by application
+ */
 LIST(send_buf);
 
 /** 
@@ -86,6 +98,10 @@ LIST(send_buf);
 static uint8_t seq_no = 0;
 
 /*---------------------------------------------------------------------------*/
+/**
+ * \brief	Debug process to print rime address, anycast listening address
+ * 		and send buffer content periodically.
+ */
 PROCESS(status_process, "Print addresses/requests buffer periodically");
 /*---------------------------------------------------------------------------*/
 /**
@@ -201,7 +217,8 @@ mesh_sent(struct mesh_conn *c)
 	uint8_t flag = (uint8_t) *((char *)packetbuf_dataptr());
 	struct anycast_conn *a_conn = (struct anycast_conn *)
 		((char *)c - offsetof(struct anycast_conn, mesh_conn));
-	
+
+	/* only callback to application for sending of data and not response */
 	if(flag == 1) {
 		a_data = (struct anycast_data *)packetbuf_dataptr();
 		if(a_conn->cb->sent) {
@@ -230,7 +247,7 @@ mesh_recv(struct mesh_conn *c, const rimeaddr_t *from, uint8_t hops)
 	/* get first byte to determine whether it's a RES or DATA */
 	uint8_t flag = (uint8_t) *((char *)packetbuf_dataptr());
 	
-	if(flag == ANYCAST_RES_FLAG){	/* response from netflood */
+	if(flag == ANYCAST_RES_FLAG){		/* response from anycast nodes */
 		struct anycast_res *res = (struct anycast_res *)packetbuf_dataptr();
 		struct anycast_send_buffer *s_buf;
 		struct anycast_data a_data;
@@ -271,7 +288,7 @@ mesh_recv(struct mesh_conn *c, const rimeaddr_t *from, uint8_t hops)
 				from->u8[0],
 				hops);
 		}
-	} else if (flag == ANYCAST_DATA_FLAG) {	/* received data from client */
+	} else if (flag == ANYCAST_DATA_FLAG) {		/* received data from client */
 		struct anycast_data *a_data = (struct anycast_data *)packetbuf_dataptr();
 		struct anycast_conn *a_conn = (struct anycast_conn *)
     			((char *)c - offsetof(struct anycast_conn, mesh_conn));
@@ -340,12 +357,13 @@ anycast_send(struct anycast_conn *c, const anycast_addr_t dest)
 	static struct anycast_send_buffer *s_buf;
 	char addr_buf[2];
 
-	 /* check whether data to be sent conforms to size limit */
+	 /* checks whether data to be sent conforms to size limit */
         if(packetbuf_datalen() > ANYCAST_DATA_LEN) {
                 PRINTF("[ERROR]\t\tData length out of range.");
                 return;
         }
 
+	/* checks whether anycast address is valid */
         if(dest<0 || dest>255) {
                 PRINTF("[ERROR]\t\tAnycast address out of range.\n");
                 return;
@@ -353,7 +371,6 @@ anycast_send(struct anycast_conn *c, const anycast_addr_t dest)
 
 	s_buf = memb_alloc(&send_buf_mem);
 	if(s_buf != NULL) {
-		
 		/* store data in buf first */
 		s_buf->address = dest;
 		s_buf->seq_number = seq_no++;
@@ -380,7 +397,8 @@ void
 anycast_close(struct anycast_conn *c)
 {
 	struct anycast_bind_address *s;
-	
+
+	/* removes anycast listening addresses and frees memory */	
 	while(list_length(c->bind_addrs) > 0) {
 		s = list_chop(c->bind_addrs);
 		
@@ -423,16 +441,16 @@ PROCESS_THREAD(status_process, ev, data)
 
     		PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
 
+		/* prints rime and anycast addresses */
 		snprintf(buf, 100, "[ADDR]\t\tRIME:%02X:%02X", 
 			addr.u8[1], addr.u8[0]);	
-	
 		for(a = list_head(a_conn->bind_addrs); a != NULL; a = a->next){
 			snprintf(buf, 100, "%s | ANYCAST%u:%u", 
 				buf, ++i, a->address);	
   		}
-		
 		PRINTF("%s\n", buf);
 
+		/* prints send buffer content */
 		for(b = list_head(send_buf); b != NULL; b = b->next ) {
       			PRINTF("[BUF]\t\t%u|%u|'%s'\n", 
 				b->seq_number,

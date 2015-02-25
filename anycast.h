@@ -4,7 +4,7 @@
  *
  * The anycast module send a data packet to a anycast server in the network.
  *
- * \sections channels Channels
+ * \section channels Channels
  *
  * The anycast modules uses 4 channels; 1 for the netflood and 3 for the mesh.
  */
@@ -23,21 +23,34 @@
 #include "net/rime/mesh.h"
 #include "lib/list.h"
 
-
+/**
+ * \brief	Period to timeout a received anycast send request.
+ */
 #define ANYCAST_TIMEOUT (CLOCK_SECOND * 10)
+
+/**
+ * \brief	Flag value for response in anycase message.
+ */
 #define ANYCAST_RES_FLAG 0
+
+/**
+ * \brief	Flag value for data in anycast message.
+ */
 #define ANYCAST_DATA_FLAG 1
 
-/*
- * \brief	maximum length of data application is allowed to send
+/**
+ * \brief	Maximum length of data application is allowed to send.
  */
 #define ANYCAST_DATA_LEN 103
 
-/* no anycast server replied to the request */
+/**
+ * \brief	Error code when no anycast server replied.
+ */
 #define ERR_NO_SERVER_FOUND 0
 
-/* mesh layer could not found a route for the data packet to the responded 
- * anycast server 
+/**
+ * \brief 	Error code when mesh layer could not found a route for the data
+ *		packet to the responded 
  */
 #define ERR_NO_ROUTE 1
 
